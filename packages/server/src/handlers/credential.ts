@@ -1,13 +1,16 @@
 import { Credential } from "@opencode/core/credential"
 import { FileSystem } from "@opencode/core/filesystem"
+import { Generate } from "@opencode/core/generate"
 import { Location } from "@opencode/core/location"
 import { LocationServiceMap } from "@opencode/core/location-services"
 import { AbsolutePath } from "@opencode/core/schema"
-import { ConflictError } from "@opencode/protocol/errors"
+import { AIError } from "@opencode/ai/effect"
+import { ConflictError, InvalidRequestError } from "@opencode/protocol/errors"
 import { Global } from "@opencode/util/global"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
 import { Api } from "../api"
+import { awaitPlugins } from "../location"
 import { requireConnectable } from "./integration"
 
 export const CredentialHandler = HttpApiBuilder.group(Api, "server.credential", (handlers) =>
@@ -65,6 +68,62 @@ export const CredentialHandler = HttpApiBuilder.group(Api, "server.credential", 
         Effect.fn(function* (ctx) {
           const credential = yield* Credential.Service
           yield* credential.remove(ctx.params.credentialID)
+          return HttpApiSchema.NoContent.make()
+        }),
+      )
+      .handle(
+        "credential.credit",
+        Effect.fn(function* (ctx) {
+          const credential = yield* Credential.Service
+          yield* credential.setCreditState(ctx.params.credentialID, {
+            creditState: ctx.payload.creditState,
+            credits: ctx.payload.credits,
+            creditsCheckedAt: ctx.payload.creditsCheckedAt,
+            creditExhaustedUntil: ctx.payload.creditExhaustedUntil,
+          })
+          return HttpApiSchema.NoContent.make()
+        }),
+      )
+      .handle(
+        "credential.validate",
+        Effect.fn(function* (ctx) {
+          yield* awaitPlugins
+          const credential = yield* Credential.Service
+          const generate = yield* Generate.Service
+          const stored = yield* credential.get(ctx.params.credentialID)
+          if (!stored)
+            return yield* new InvalidRequestError({
+              message: `Credential not found: ${ctx.params.credentialID}`,
+            })
+          if (stored.value.type !== "key")
+            return yield* new InvalidRequestError({
+              message: "Credential is not an API key",
+            })
+          const now = Date.now()
+          const result = yield* Effect.result(generate.text({ prompt: "ping", model: undefined }))
+          if (result._tag === "Success") {
+            yield* credential.setCreditState(ctx.params.credentialID, {
+              creditState: "ok",
+              creditsCheckedAt: now,
+            })
+          } else {
+            const error = result.error
+            if (
+              error instanceof AIError &&
+              (error.reason._tag === "QuotaExceeded" || error.reason._tag === "Authentication")
+            ) {
+              yield* credential.setCreditState(ctx.params.credentialID, {
+                creditState: "exhausted",
+                creditExhaustedUntil: 0,
+                creditsCheckedAt: now,
+              })
+            } else {
+              yield* credential.setCreditState(ctx.params.credentialID, {
+                creditState: "unknown",
+                creditsCheckedAt: now,
+              })
+            }
+          }
           return HttpApiSchema.NoContent.make()
         }),
       )

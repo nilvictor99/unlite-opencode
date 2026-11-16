@@ -44,6 +44,14 @@ export const Key = Schema.Struct({
   type: Schema.Literal("key"),
   key: Schema.String,
   metadata: optional(Schema.Record(Schema.String, Schema.Unknown)),
+  /** Estado conocido del crédito de esta clave: "ok", "exhausted" o "unknown" (pendiente de validar). */
+  creditState: optional(Schema.Literal("ok", "exhausted", "unknown")),
+  /** Saldo de créditos conocido, cuando el proveedor lo expone. */
+  credits: optional(Schema.Number),
+  /** Marca de tiempo (ms) de la última verificación de crédito. 0 = nunca verificada. */
+  creditsCheckedAt: optional(NonNegativeInt),
+  /** Hasta qué marca de tiempo (ms) la clave se considera sin crédito. 0 = disponible. */
+  creditExhaustedUntil: optional(NonNegativeInt),
 }).annotate({ identifier: "Credential.Key" })
 
 /** References a credential source whose secrets and renewal are managed outside the credential store. */

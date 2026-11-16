@@ -11,6 +11,7 @@ import type { Agent } from "@opencode/schema/agent"
 import { Cause, Clock, Data, Deferred, Duration, Effect, Exit, Fiber, Option, Stream } from "effect"
 import { SessionError } from "@opencode/schema/session-error"
 import { Bus } from "../../bus.js"
+import { Credential } from "../../credential.js"
 import { Integration } from "../../integration.js"
 import { KeyPool } from "../../key-pool.js"
 import { Permission } from "../../permission.js"
@@ -251,8 +252,29 @@ export const make = Effect.gen(function* () {
           (recorded.outputStarted && isInterruptedStream(llmFailure))
         if (!proposedRetry && llmFailure instanceof AIError && input.model.keyID) {
           const reason = llmFailure.reason
-          if (reason._tag === "QuotaExceeded" || reason._tag === "RateLimit") {
-            const integrationID = input.model.ref.providerID as unknown as Integration.ID
+          const integrationID = input.model.ref.providerID as unknown as Integration.ID
+          if (reason._tag === "QuotaExceeded") {
+            // Crédito realmente agotado: se marca la key como sin crédito tanto en el
+            // pool (memoria de la sesión) como en la credencial (persistido), para no
+            // volver a usarla hasta que se valide que se renovó.
+            const retryAfterMs = llmFailure.retryAfterMs
+            const until =
+              typeof retryAfterMs === "number" && retryAfterMs > 0
+                ? Date.now() + retryAfterMs
+                : 0
+            const credential = yield* Credential.Service
+            yield* keyPool.markCreditExhausted({
+              integrationID,
+              keyID: input.model.keyID,
+              until,
+            })
+            yield* credential.setCreditState(input.model.keyID, {
+              creditState: "exhausted",
+              creditExhaustedUntil: until,
+            })
+            proposedRetry = true
+          } else if (reason._tag === "RateLimit") {
+            // Rate limit temporal: se agota solo por un periodo y se rota.
             const retryAfterMs = llmFailure.retryAfterMs
             const until =
               typeof retryAfterMs === "number" && retryAfterMs > 0

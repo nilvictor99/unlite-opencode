@@ -80,6 +80,16 @@ export interface Interface {
   readonly update: (id: ID, updates: Partial<Pick<Info, "label" | "value">>) => Effect.Effect<void>
   /** Removes a stored credential. */
   readonly remove: (id: ID) => Effect.Effect<void>
+  /** Actualiza solo los campos de estado de crédito de una credencial de tipo `key`, sin tocar el label ni el secreto. */
+  readonly setCreditState: (
+    id: ID,
+    updates: {
+      readonly creditState?: "ok" | "exhausted" | "unknown"
+      readonly credits?: number
+      readonly creditsCheckedAt?: number
+      readonly creditExhaustedUntil?: number
+    },
+  ) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Credential") {}
@@ -343,6 +353,39 @@ const layer = Layer.effect(
             { integrationID: removed.integrationID, credentialID: removed.credentialID },
             { global: true },
           )
+      }),
+      setCreditState: Effect.fn("Credential.setCreditState")(function* (id, updates) {
+        const row = yield* db
+          .select({ integrationID: CredentialTable.integration_id, value: CredentialTable.value })
+          .from(CredentialTable)
+          .where(eq(CredentialTable.id, id))
+          .get()
+          .pipe(logFailure("credit state lookup failed", { credentialID: id }))
+        if (!row?.integrationID) {
+          yield* Effect.logWarning("credit state update skipped", { credentialID: id, reason: "credential_missing" })
+          return
+        }
+        const value = row.value
+        if (value.type !== "key") {
+          yield* Effect.logWarning("credit state update skipped", {
+            credentialID: id,
+            reason: "not_a_key_credential",
+          })
+          return
+        }
+        const updated = {
+          ...value,
+          ...(updates.creditState === undefined ? {} : { creditState: updates.creditState }),
+          ...(updates.credits === undefined ? {} : { credits: updates.credits }),
+          ...(updates.creditsCheckedAt === undefined ? {} : { creditsCheckedAt: updates.creditsCheckedAt }),
+          ...(updates.creditExhaustedUntil === undefined ? {} : { creditExhaustedUntil: updates.creditExhaustedUntil }),
+        }
+        yield* db
+          .update(CredentialTable)
+          .set({ value: updated })
+          .where(eq(CredentialTable.id, id))
+          .run()
+          .pipe(logFailure("credit state update failed", { credentialID: id }))
       }),
     })
     return service

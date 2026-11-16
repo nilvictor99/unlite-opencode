@@ -536,6 +536,24 @@ function App() {
       .environment({ sessionID: session.id, variables: terminalEnvironment.variables })
       .catch(toast.error)
   })
+  // Al abrir opencode, valida las API keys cuyo estado de crédito aún no se conoce
+  // ("unknown") para que las agotadas no se seleccionen hasta que se renueven.
+  const [credentialsValidated, setCredentialsValidated] = createSignal(false)
+  createEffect(() => {
+    if (credentialsValidated()) return
+    if (client.connection.status() !== "connected") return
+    void client.api.credential
+      .list()
+      .then((response) => {
+        for (const entry of response.data) {
+          if (entry.value.type === "key" && entry.value.creditState === "unknown") {
+            void client.api.credential.validate({ credentialID: entry.id }).catch(() => {})
+          }
+        }
+        setCredentialsValidated(true)
+      })
+      .catch(() => setCredentialsValidated(true))
+  })
   const [layout, updateLayout] = useStorage().store<{ verticalTabsWidth?: number }>("layout", {
     initial: { verticalTabsWidth: SESSION_SIDEBAR_WIDTH },
   })
